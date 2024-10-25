@@ -12,7 +12,7 @@ import 'winston-daily-rotate-file';
 const consoleTransport = new winston.transports.Console({
   level: 'info',
   format: winston.format.combine(
-    winston.format.colorize(),
+    winston.format.colorize({ message: true }),
     winston.format.timestamp(),
     winston.format.ms(),
     nestWinstonModuleUtilities.format.nestLike('FBW-SimBridge', { prettyPrint: true }),
