@@ -113,6 +113,11 @@ export class FileService {
     return getDocument({ data: retrievedFile, isEvalSupported: false }).promise.then((document) => document.numPages);
   }
 
+  async getNumberOfPdfPagesFromUrl(url: string): Promise<number> {
+    const doc = await this.getPdfFromUrl(url);
+    return doc.numPages;
+  }
+
   /**
    * Calling this function checks the safety of the supplied file path and throws an error if it deemed not safe against various potential attacks.
    * @param filePath
@@ -124,6 +129,59 @@ export class FileService {
 
     if (filePath.indexOf(getSimbridgeDir()) !== 0) {
       throw new HttpException('Unacceptable file path', HttpStatus.UNPROCESSABLE_ENTITY);
+    }
+  }
+
+  async getPdfFromUrl(url: string): Promise<PDFDocumentProxy> {
+    if (this.pdfCache.has(url)) {
+      return this.pdfCache.get(url);
+    }
+
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      throw new Error('encountered error retrieving PDF file');
+    }
+
+    const data = new Uint8Array(await resp.arrayBuffer());
+
+    // Some PDFs need external cmaps.
+    const CMAP_URL = `${join(getExecutablePath(), 'node_modules', 'pdfjs-dist', 'cmaps')}/`;
+    const CMAP_PACKED = true;
+
+    // Where the standard fonts are located.
+    const STANDARD_FONT_DATA_URL = `${join(getExecutablePath(), 'node_modules', 'pdfjs-dist', 'standard_fonts')}/`;
+
+    // Load the PDF file.
+    const pdfDocument = await getDocument({
+      data,
+      cMapUrl: CMAP_URL,
+      cMapPacked: CMAP_PACKED,
+      standardFontDataUrl: STANDARD_FONT_DATA_URL,
+    }).promise;
+
+    this.pdfCache.set(url, pdfDocument);
+    return pdfDocument;
+  }
+
+  async getConvertedPdfFileFromUrl(url: string, pageNumber: number, scale: number = 4): Promise<StreamableFile> {
+    try {
+      const pngKey = `${url};;${pageNumber};;${scale}`;
+      if (this.pngCache.has(pngKey)) {
+        return new StreamableFile(this.pngCache.get(pngKey));
+      }
+
+      const file = await this.getPdfFromUrl(url);
+      const pngBuffer = await pdfToPng(file, pageNumber, scale);
+
+      if (!this.pngCache.has(pngKey)) {
+        this.pngCache.set(pngKey, pngBuffer);
+      }
+
+      return new StreamableFile(pngBuffer);
+    } catch (err) {
+      const message = `Error converting PDF to PNG: ${url}`;
+      this.logger.log(message, err);
+      throw new HttpException(message, HttpStatus.INTERNAL_SERVER_ERROR);
     }
   }
 

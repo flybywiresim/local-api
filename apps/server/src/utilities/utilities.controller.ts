@@ -37,6 +37,39 @@ export class UtilityController {
     return convertedPdfFile;
   }
 
+  @Get('pdf/fromUrl')
+  @ApiResponse({
+    status: 200,
+    description: 'A streamed converted png image',
+    type: StreamableFile,
+  })
+  async getPdfFromUrl(
+    @Query('encodedUrl') encodedUrl: string,
+    @Query('pagenumber', ParseIntPipe) pagenumber: number,
+    @Response({ passthrough: true }) res,
+  ): Promise<StreamableFile> {
+    const url = decodeURIComponent(encodedUrl);
+    const convertedPdfFile = await this.fileService.getConvertedPdfFileFromUrl(`${url}`, pagenumber);
+
+    res.set({
+      'Content-Type': 'image/png',
+      'Content-Disposition': `attachment; filename=out-${pagenumber}.png`,
+    });
+
+    return convertedPdfFile;
+  }
+
+  @Get('pdf/fromUrl/numpages')
+  @ApiResponse({
+    status: 200,
+    description: 'Returns the number of pages in the pdf at the URL',
+    type: Number,
+  })
+  async getNumberOfPagesFromUrl(@Query('encodedUrl') encodedUrl: string): Promise<number> {
+    const url = decodeURIComponent(encodedUrl);
+    return this.fileService.getNumberOfPdfPagesFromUrl(url);
+  }
+
   @Get('pdf/list')
   @ApiResponse({
     status: 200,

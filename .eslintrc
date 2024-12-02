@@ -55,7 +55,8 @@
 			{
 				"singleQuote": true,
 				"parser": "typescript",
-				"printWidth": 120
+				"printWidth": 120,
+				"endOfLine": "auto"
 			}
 		],
 

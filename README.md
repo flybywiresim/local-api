@@ -24,7 +24,7 @@ $ npm install
 # Build all packages
 $ npm run build
 
-# Start server, to use interfaces you need to build them beforehand
+# Start server; some steps required the first time, see below
 $ npm run start
 
 # Wipe build/ and dist/ folders, build all packages, package to exe and copy dependencies/resources to build folder
@@ -33,6 +33,20 @@ $ npm run build:exec
 # Package to exe and copy dependencies/resources to build folder, without rebuilding
 $ npm run install:exec
 
+```
+
+## First time running with npm
+
+The server needs terrain data before it can run, so first do a full build:
+
+```bash
+$ npm run build:exec
+```
+
+This will build the terrain data in `build/terrain/`. This needs to be symlinked to the top level before running with npm:
+
+```bash
+mklink /J .\terrain .\build\terrain
 ```
 
 ## Documentation
