@@ -1,8 +1,8 @@
 import { GPU, IKernelRunShortcut, Texture } from 'gpu.js';
 import { readFile } from 'fs/promises';
 import { join } from 'path';
-import { getExecutablePath, getSimbridgeDir } from 'apps/server/src/utilities/pathUtil';
-import { AircraftStatus, ElevationProfile, NavigationDisplay, PositionData, TerrainRenderingMode } from '../types';
+import { getExecutablePath } from 'apps/server/src/utilities/pathUtil';
+import { AircraftStatus, ElevationProfile, EfisData, PositionData, TerrainRenderingMode } from '../types';
 import { TerrainMap } from '../fileformat/terrainmap';
 import { Worldmap } from '../mapdata/worldmap';
 import {
@@ -179,11 +179,14 @@ export class MapHandler {
       this.createKernels();
 
       // initial call precompile the kernels and reduce first reaction time
-      const startupConfig: NavigationDisplay = {
-        range: 10,
+      const startupConfig: EfisData = {
+        ndRange: 10,
         arcMode: true,
-        active: true,
+        terrOnNd: true,
+        terrOnVd: true,
         efisMode: 0,
+        vdRangeLower: -500,
+        vdRangeUpper: 24000,
         mapOffsetX: 0,
         mapWidth: NavigationDisplayMaxPixelWidth,
         mapHeight: NavigationDisplayMaxPixelHeight,
@@ -191,6 +194,7 @@ export class MapHandler {
       };
       const startupStatus: AircraftStatus = {
         adiruDataValid: true,
+        tawsInop: false,
         latitude: 47.26081085205078,
         longitude: 11.349658966064453,
         altitude: 1904,
@@ -200,9 +204,13 @@ export class MapHandler {
         runwayDataValid: true,
         runwayLatitude: 47.26081085205078,
         runwayLongitude: 11.349658966064453,
-        navigationDisplayCapt: startupConfig,
-        navigationDisplayFO: startupConfig,
+        efisDataCapt: startupConfig,
+        efisDataFO: startupConfig,
         navigationDisplayRenderingMode: TerrainRenderingMode.ArcMode,
+        manualAzimEnabled: false,
+        manualAzimDegrees: 0,
+        groundTruthLatitude: 47.26081085205078,
+        groundTruthLongitude: 11.349658966064453,
       };
       const startupPosition: PositionData = {
         latitude: 47.26081085205078,
@@ -370,8 +378,8 @@ export class MapHandler {
     return this.cachedElevationData.cpuData[index];
   }
 
-  public createLocalElevationMap(config: NavigationDisplay): Texture {
-    if (this.cachedElevationData.gpuData === null) return null;
+  public createLocalElevationMap(config: EfisData): Texture {
+    if (this.cachedElevationData.gpuData === null || this.aircraftStatus === null) return null;
 
     if (
       this.extractLocalElevationMap.output === null ||
@@ -381,7 +389,9 @@ export class MapHandler {
       this.extractLocalElevationMap = this.extractLocalElevationMap.setOutput([config.mapWidth, config.mapHeight]);
     }
 
-    let metresPerPixel = Math.round((config.range * NauticalMilesToMetres) / (config.mapHeight - config.centerOffsetY));
+    let metresPerPixel = Math.round(
+      (config.ndRange * NauticalMilesToMetres) / (config.mapHeight - config.centerOffsetY),
+    );
     if (config.arcMode) metresPerPixel *= 2.0;
 
     // create the local elevation map

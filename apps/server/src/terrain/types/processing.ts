@@ -3,4 +3,5 @@ export interface ElevationProfile {
   waypointsLatitudes: number[];
   waypointsLongitudes: number[];
   range: number;
+  trackChangesSignificantlyAtDistance: number;
 }

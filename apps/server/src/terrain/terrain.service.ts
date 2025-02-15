@@ -5,10 +5,12 @@ import { NavigationDisplayThresholdsDto } from './dto/navigationdisplaythreshold
 import {
   DisplaySide,
   MainToWorkerThreadMessageTypes,
+  VerticalPathData,
   WorkerToMainThreadMessage,
   WorkerToMainThreadMessageTypes,
 } from './types';
 import { ElevationSamplePathDto } from './dto/elevationsamplepath.dto';
+import { TawsAircraftStatusDataDto } from 'apps/server/src/terrain/dto/tawsaircraftstatusdata.dto';
 
 @Injectable()
 export class TerrainService implements OnApplicationShutdown {
@@ -76,11 +78,26 @@ export class TerrainService implements OnApplicationShutdown {
     );
   }
 
-  public updateFlightPath(display: DisplaySide, path: ElevationSamplePathDto): void {
+  public updateAircraftStatusData(aircraftStatusData: TawsAircraftStatusDataDto): void {
     if (this.terrainWorker) {
       this.terrainWorker.postMessage({
+        type: MainToWorkerThreadMessageTypes.AircraftStatusData,
+        content: aircraftStatusData,
+      });
+    }
+  }
+
+  public updateFlightPath(side: DisplaySide, path: ElevationSamplePathDto): void {
+    if (this.terrainWorker) {
+      const content: VerticalPathData = {
+        side: side,
+        pathWidth: path.pathWidth,
+        trackChangesSignificantlyAtDistance: path.trackChangesSignificantlyAtDistance,
+        waypoints: path.waypoints,
+      };
+      this.terrainWorker.postMessage({
         type: MainToWorkerThreadMessageTypes.VerticalDisplayPath,
-        content: path,
+        content: content,
       });
     }
   }

@@ -101,3 +101,7 @@ export function wgs84toPixelCoordinate(
 
   return [Math.round(currentWorldGridX + longPixelDelta), Math.round(currentWorldGridY + latPixelDelta)];
 }
+
+export function verticalDisplayDistanceToPixelX(distance: number, range: number): number {
+  return (distance / range) * 540;
+}

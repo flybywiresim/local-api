@@ -15,7 +15,7 @@ export class Worldmap {
 
   public TileManager: TileManager = null;
 
-  public VisibilityRange: number = 700;
+  public VisibilityRange: number = 800;
 
   public static findTileIndex(tiles: Tile[], latitude: number, longitude: number): number {
     return tiles.findIndex((t) => t.Southwest.latitude === latitude && t.Southwest.longitude === longitude);

@@ -1,4 +1,4 @@
-import { GPU } from 'gpu.js';
+﻿import { GPU } from 'gpu.js';
 import { parentPort } from 'worker_threads';
 import * as sharp from 'sharp';
 import {
@@ -6,10 +6,11 @@ import {
   DisplaySide,
   MainToWorkerThreadMessage,
   MainToWorkerThreadMessageTypes,
-  NavigationDisplay,
+  EfisData,
   PositionData,
   TerrainLevelMode,
   TerrainRenderingMode,
+  VerticalPathData,
   WorkerToMainThreadMessageTypes,
 } from '../types';
 import { SimConnect } from '../communication/simconnect';
@@ -32,7 +33,7 @@ import { ThreadLogger } from './logging/threadlogger';
 import { MapHandler } from './maphandler';
 import { NavigationDisplayRenderer } from './navigationdisplayrenderer';
 import { VerticalDisplayRenderer } from './verticaldisplayrenderer';
-import { projectWgs84 } from './gpu/helper';
+import { projectWgs84 } from 'apps/server/src/terrain/processing/gpu/helper';
 
 const DisplayScreenPixelHeightWithoutVerticalDisplay = 768;
 const DisplayScreenPixelHeightWithVerticalDisplay = 1024;
@@ -45,6 +46,14 @@ class TerrainWorker {
   private simPaused: boolean = true;
 
   private renderingMode: TerrainRenderingMode = TerrainRenderingMode.ArcMode;
+
+  private forceRedraw: boolean = false;
+
+  private manualAzimEnabled: boolean = true;
+  private manualAzimDegrees: number = 0;
+  private manualAzimEndPoint: [number, number] | null = null;
+
+  private simBridgeClientUsed = false;
 
   private gpu: GPU = null;
 
@@ -95,6 +104,13 @@ class TerrainWorker {
     this.simPaused = false;
   }
 
+  public enableSimBridgeClientData(): void {
+    if (!this.simBridgeClientUsed) {
+      this.logging.info('SimBridge client data received, ignoring SimConnect aircraftStatusUpdate from now on.');
+    }
+    this.simBridgeClientUsed = true;
+  }
+
   private onPositionUpdate(data: PositionData): void {
     if (this.initialized === false) return;
 
@@ -104,14 +120,22 @@ class TerrainWorker {
   private updateRendering(side: DisplaySide, status: AircraftStatus) {
     if (this.displayRendering[side].navigationDisplay === null) return;
 
-    const configuration = side === DisplaySide.Left ? status.navigationDisplayCapt : status.navigationDisplayFO;
+    const configuration = side === DisplaySide.Left ? status.efisDataCapt : status.efisDataFO;
     const lastConfig = this.displayRendering[side].navigationDisplay.displayConfiguration();
-    const stopRendering = !configuration.active && lastConfig !== null && lastConfig.active;
-    let startRendering = configuration.active && (lastConfig === null || !lastConfig.active);
 
-    startRendering ||=
-      lastConfig !== null && (lastConfig.range !== configuration.range || lastConfig.arcMode !== configuration.arcMode);
-    startRendering ||= lastConfig !== null && lastConfig.efisMode !== configuration.efisMode;
+    this.forceRedraw ||= this.manualAzimEnabled !== status.manualAzimEnabled;
+
+    const configChanged =
+      lastConfig !== null &&
+      (lastConfig.efisMode !== configuration.efisMode ||
+        lastConfig.ndRange !== configuration.ndRange ||
+        lastConfig.arcMode !== configuration.arcMode ||
+        lastConfig.terrOnNd !== configuration.terrOnNd ||
+        lastConfig.terrOnVd !== configuration.terrOnVd);
+    const stopRendering =
+      lastConfig !== null &&
+      ((lastConfig.terrOnNd && !configuration.terrOnNd) || (lastConfig.terrOnVd && !configuration.terrOnVd));
+    const startRendering = configChanged || this.forceRedraw || (lastConfig === null && configuration !== null);
 
     if (stopRendering || startRendering) {
       if (this.displayRendering[side].durationInterval !== null) {
@@ -136,25 +160,62 @@ class TerrainWorker {
     this.displayRendering[side].navigationDisplay.aircraftStatusUpdate(status, side, false);
     this.displayRendering[side].verticalDisplay.aircraftStatusUpdate(status, side);
 
-    // TODO replace by in aircraft code and endpoints
-    const endpoint = projectWgs84(status.latitude, status.longitude, status.heading, 360 * NauticalMilesToMetres);
-    this.displayRendering[side].verticalDisplay.pathDataUpdate([endpoint[0]], [endpoint[1]]);
+    if (!this.displayRendering[side].verticalDisplay.hasPath()) {
+      this.manualAzimEndPoint = projectWgs84(
+        status.latitude,
+        status.longitude,
+        status.heading,
+        160 * NauticalMilesToMetres,
+      );
+      this.displayRendering[side].verticalDisplay.pathDataUpdate({
+        side: side,
+        pathWidth: 1.0,
+        trackChangesSignificantlyAtDistance: 0,
+        waypoints: [{ latitude: this.manualAzimEndPoint[0], longitude: this.manualAzimEndPoint[1] }],
+      });
+    }
 
     if (startRendering) {
       this.startNavigationDisplayRenderingCycle(side);
     }
+    this.forceRedraw = false;
   }
 
-  private onAircraftStatusUpdate(data: AircraftStatus): void {
-    if (this.initialized === false) return;
+  private updatePathData(side: DisplaySide, path: VerticalPathData) {
+    this.forceRedraw ||= this.displayRendering[side].verticalDisplay.numPathElements() !== path.waypoints.length;
+    if (this.manualAzimEnabled || path.waypoints.length === 0) {
+      const waypoints =
+        this.manualAzimEndPoint === null
+          ? []
+          : [{ latitude: this.manualAzimEndPoint[0], longitude: this.manualAzimEndPoint[1] }];
+      this.displayRendering[side].verticalDisplay.pathDataUpdate({
+        side: side,
+        pathWidth: 1.0,
+        trackChangesSignificantlyAtDistance: 0,
+        waypoints: waypoints,
+      });
+    } else {
+      this.displayRendering[side].verticalDisplay.pathDataUpdate(path);
+    }
+  }
+
+  public onAircraftStatusUpdate(data: AircraftStatus): void {
+    if (this.initialized === false || !data) return;
 
     // eslint-disable-next-line no-bitwise
     this.verticalDisplayRequired =
       (data.navigationDisplayRenderingMode & TerrainRenderingMode.VerticalDisplayRequired) ===
       TerrainRenderingMode.VerticalDisplayRequired;
+
     // eslint-disable-next-line no-bitwise
     this.renderingMode =
       data.navigationDisplayRenderingMode & (TerrainRenderingMode.ArcMode | TerrainRenderingMode.ScanlineMode);
+
+    this.manualAzimEnabled = data.manualAzimEnabled;
+    this.manualAzimDegrees = data.manualAzimDegrees;
+    this.manualAzimEndPoint = data.manualAzimEnabled
+      ? projectWgs84(data.latitude, data.longitude, this.manualAzimDegrees, 160 * NauticalMilesToMetres)
+      : null;
 
     if (this.verticalDisplayRequired === true) {
       this.displayDimension.height = DisplayScreenPixelHeightWithVerticalDisplay;
@@ -168,15 +229,24 @@ class TerrainWorker {
     this.updateRendering(DisplaySide.Right, data);
   }
 
-  constructor(private logging: Logger) {
+  public onVerticalPathDataUpdate(data: VerticalPathData): void {
+    if (this.initialized === false) return;
+
+    this.updatePathData(data.side, data);
+  }
+
+  constructor(public logging: Logger) {
     this.simconnect = new SimConnect(this.logging);
     this.simconnect.addUpdateCallback('reset', () => this.onReset());
     this.simconnect.addUpdateCallback('paused', () => this.onPaused());
     this.simconnect.addUpdateCallback('unpaused', () => this.onUnpaused());
     this.simconnect.addUpdateCallback('positionUpdate', (data: PositionData) => this.onPositionUpdate(data));
-    this.simconnect.addUpdateCallback('aircraftStatusUpdate', (data: AircraftStatus) =>
-      this.onAircraftStatusUpdate(data),
-    );
+    this.simconnect.addUpdateCallback('aircraftStatusUpdate', (data: AircraftStatus) => {
+      if (!this.simBridgeClientUsed) {
+        // Only react to SimConnect updates for AircraftStatus if no SimBridge-Client data has been received
+        this.onAircraftStatusUpdate(data);
+      }
+    });
 
     this.gpu = new GPU({ mode: GpuProcessingActive === true ? 'gpu' : 'cpu' });
 
@@ -220,21 +290,27 @@ class TerrainWorker {
       if (initialized === true) {
         this.logging.info('Initialized the map handler');
 
-        const startupNdConfigL: NavigationDisplay = {
-          range: 20,
+        const startupNdConfigL: EfisData = {
+          ndRange: 20,
           arcMode: true,
-          active: true,
+          terrOnNd: true,
+          terrOnVd: true,
           efisMode: 0,
+          vdRangeLower: -500,
+          vdRangeUpper: 24000,
           mapOffsetX: 0,
           mapWidth: NavigationDisplayMaxPixelWidth,
           mapHeight: NavigationDisplayMaxPixelHeight,
           centerOffsetY: 0,
         };
-        const startupNdConfigR: NavigationDisplay = {
-          range: 10,
+        const startupNdConfigR: EfisData = {
+          ndRange: 10,
           arcMode: true,
-          active: false,
+          terrOnNd: false,
+          terrOnVd: false,
           efisMode: 0,
+          vdRangeLower: -500,
+          vdRangeUpper: 24000,
           mapOffsetX: 0,
           mapWidth: NavigationDisplayMaxPixelWidth,
           mapHeight: NavigationDisplayMaxPixelHeight,
@@ -242,6 +318,7 @@ class TerrainWorker {
         };
         const startupStatus: AircraftStatus = {
           adiruDataValid: true,
+          tawsInop: false,
           latitude: 47.26081085205078,
           longitude: 11.349658966064453,
           altitude: 1904,
@@ -251,9 +328,13 @@ class TerrainWorker {
           runwayDataValid: false,
           runwayLatitude: 0.0,
           runwayLongitude: 0.0,
-          navigationDisplayCapt: startupNdConfigL,
-          navigationDisplayFO: startupNdConfigR,
+          efisDataCapt: startupNdConfigL,
+          efisDataFO: startupNdConfigR,
           navigationDisplayRenderingMode: TerrainRenderingMode.ArcMode,
+          manualAzimEnabled: false,
+          manualAzimDegrees: 0,
+          groundTruthLatitude: 47.26081085205078,
+          groundTruthLongitude: 11.349658966064453,
         };
 
         this.displayRendering.L.navigationDisplay.aircraftStatusUpdate(startupStatus, DisplaySide.Left, true);
@@ -326,8 +407,8 @@ class TerrainWorker {
 
   private createScreenResolutionFrame(
     side: DisplaySide,
-    navigationDisplay: Uint8ClampedArray,
-    verticalDisplay: Uint8ClampedArray,
+    navigationDisplay: Uint8ClampedArray | null,
+    verticalDisplay: Uint8ClampedArray | null,
   ): Uint8ClampedArray {
     const result = new Uint8ClampedArray(
       this.displayDimension.width * RenderingColorChannelCount * this.displayDimension.height,
@@ -378,7 +459,11 @@ class TerrainWorker {
   public startNavigationDisplayRenderingCycle(side: DisplaySide): void {
     const verticalDisplayRenderedOnSide =
       this.verticalDisplayRequired &&
+      this.displayRendering[side].navigationDisplay.displayConfiguration().terrOnVd &&
       [2, 3].includes(this.displayRendering[side].navigationDisplay.displayConfiguration().efisMode);
+
+    const navigationDisplayRenderedOnSide =
+      this.displayRendering[side].navigationDisplay.displayConfiguration().terrOnNd;
 
     if (this.displayRendering[side].timeout !== null) {
       clearTimeout(this.displayRendering[side].timeout);
@@ -393,7 +478,7 @@ class TerrainWorker {
     this.displayRendering[side].renderedLastFrameNavigationDisplay = false;
     this.displayRendering[side].renderedLastFrameVerticalDisplay = false;
     this.displayRendering[side].navigationDisplay.startNewMapCycle(currentTime);
-    if (verticalDisplayRenderedOnSide === true) {
+    if (verticalDisplayRenderedOnSide) {
       this.displayRendering[side].verticalDisplay.startNewMapCycle(currentTime);
     }
     this.displayRendering[side].cycleData.frames = [];
@@ -405,8 +490,8 @@ class TerrainWorker {
       }
       const ndMap = this.displayRendering[side].navigationDisplay.currentFrame();
 
-      let vdMap = null;
-      if (verticalDisplayRenderedOnSide === true) {
+      let vdMap: Uint8ClampedArray | null = null;
+      if (verticalDisplayRenderedOnSide) {
         if (this.displayRendering[side].renderedLastFrameVerticalDisplay === false) {
           this.displayRendering[side].renderedLastFrameVerticalDisplay =
             this.displayRendering[side].verticalDisplay.render();
@@ -416,7 +501,7 @@ class TerrainWorker {
         this.displayRendering[side].renderedLastFrameVerticalDisplay = true;
       }
 
-      const frame = this.createScreenResolutionFrame(side, ndMap, vdMap);
+      const frame = this.createScreenResolutionFrame(side, navigationDisplayRenderedOnSide ? ndMap : null, vdMap);
 
       if (frame !== null && this.simPaused === false) {
         sharp(frame, {
@@ -432,6 +517,13 @@ class TerrainWorker {
             const displayData = this.displayRendering[side].navigationDisplay.displayData();
             displayData.FrameByteCount = buffer.byteLength;
             displayData.FirstFrame = this.displayRendering[side].cycleData.frames.length === 0;
+
+            if (!navigationDisplayRenderedOnSide) {
+              // metadata is used in the TERRONND WASM module to detect frame changes, so we still have to send it even though ND TERR would be disabled on the A380X
+              // Send negative values for the thresholds in order to hide them instead
+              displayData.MinimumElevation = -1;
+              displayData.MaximumElevation = -1;
+            }
 
             this.simconnect.sendNavigationDisplayTerrainMapMetadata(side, displayData);
             this.simconnect.sendNavigationDisplayTerrainMapFrame(side, buffer);
@@ -472,7 +564,10 @@ class TerrainWorker {
           this.displayRendering[side].timeout = null;
         }
 
-        if (this.displayRendering[side].navigationDisplay.displayConfiguration().active === true) {
+        if (
+          this.displayRendering[side].navigationDisplay.displayConfiguration().terrOnNd ||
+          this.displayRendering[side].navigationDisplay.displayConfiguration().terrOnVd
+        ) {
           const timeout =
             this.renderingMode === TerrainRenderingMode.ArcMode
               ? RenderingMapUpdateTimeoutArcMode
@@ -515,5 +610,10 @@ parentPort.on('message', (data: MainToWorkerThreadMessage) => {
     });
   } else if (data.type === MainToWorkerThreadMessageTypes.Shutdown) {
     terrainWorker.shutdown();
+  } else if (data.type === MainToWorkerThreadMessageTypes.AircraftStatusData) {
+    terrainWorker.enableSimBridgeClientData();
+    terrainWorker.onAircraftStatusUpdate(data.content);
+  } else if (data.type === MainToWorkerThreadMessageTypes.VerticalDisplayPath) {
+    terrainWorker.onVerticalPathDataUpdate(data.content);
   }
 });
